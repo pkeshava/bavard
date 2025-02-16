@@ -2,6 +2,7 @@ import os
 import time
 import random
 import pandas as pd
+from datetime import datetime
 
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, Static, Button, DataTable, RichLog, Input
@@ -52,7 +53,6 @@ class FilePickerScreen(Screen):
         except Exception as e:
             self.query_one("#debug_log", RichLog).write(f"[red]Error reading directory: {e}[/red]")
             return
-        # Directories first, then files, sorted alphabetically.
         items = sorted(items, key=lambda x: (not os.path.isdir(os.path.join(directory, x)), x.lower()))
         for item in items:
             full_path = os.path.join(directory, item)
@@ -111,7 +111,7 @@ class FilePickerScreen(Screen):
 # Screen 2: CSV Loader & Column Selection Screen
 # ---------------------------
 class CSVLoaderScreen(Screen):
-    """Screen to load the CSV file, preview it, and choose French/English columns."""
+    """Screen to load and preview the CSV file, and select French/English columns."""
     
     BINDINGS = [("r", "return_to_picker", "Return to File Picker")]
 
@@ -156,7 +156,8 @@ class CSVLoaderScreen(Screen):
             table.add_column(str(col))
         for _, row in preview_df.iterrows():
             table.add_row(*[str(item) for item in row])
-        self.query_one("#debug_log", RichLog).write(f"[blue]Preview loaded: {preview_df.shape[0]} rows, {preview_df.shape[1]} columns.[/blue]")
+        self.query_one("#debug_log", RichLog).write(
+            f"[blue]Preview loaded: {preview_df.shape[0]} rows, {preview_df.shape[1]} columns.[/blue]")
 
     async def action_return_to_picker(self) -> None:
         self.query_one("#debug_log", RichLog).write("[yellow]Returning to FilePickerScreen...[/yellow]")
@@ -169,7 +170,8 @@ class CSVLoaderScreen(Screen):
             try:
                 french_index = int(self.query_one("#french_col", Input).value.strip()) - 1
                 english_index = int(self.query_one("#english_col", Input).value.strip()) - 1
-                self.query_one("#debug_log", RichLog).write(f"[blue]Selected columns: French={french_index+1}, English={english_index+1}[/blue]")
+                self.query_one("#debug_log", RichLog).write(
+                    f"[blue]Selected columns: French={french_index+1}, English={english_index+1}[/blue]")
             except ValueError:
                 self.query_one("#debug_log", RichLog).write("[red]Error: Invalid column numbers.[/red]")
                 return
@@ -190,7 +192,7 @@ class CSVLoaderScreen(Screen):
 class FlashcardScreen(Screen):
     """Screen for flashcard testing."""
     
-    BINDINGS = [("9", "exit_flashcards", "Exit Flashcard Mode")]
+    BINDINGS = [("ctrl+r", "exit_flashcards", "Exit Flashcard Mode")]
 
     def __init__(self, df, french_col: int, english_col: int) -> None:
         super().__init__()
@@ -198,15 +200,18 @@ class FlashcardScreen(Screen):
         self.french_col = french_col
         self.english_col = english_col
         self.current_index = 0
-        self.word_stats = {}  # For tracking correct/incorrect answers (optional)
+        self.word_stats = {}  # For tracking correct/incorrect answers
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         yield Static("Flashcard Testing", classes="title")
         yield Static("", id="flashcard_display")
+        yield Input(placeholder="Type your translation guess here", id="guess_input")
         with Container():
             yield Button("Show Translation", id="show_translation", variant="primary")
             yield Button("Next Card", id="next_card", variant="success")
+            yield Button("Save Stats", id="save_stats", variant="warning")
+        yield Static("Press Ctrl+R to exit flashcard mode", id="exit_instructions")
         yield RichLog(id="debug_log")
         yield Footer()
 
@@ -218,19 +223,67 @@ class FlashcardScreen(Screen):
         if self.current_index >= len(self.df):
             self.current_index = 0  # Restart if at end.
         row = self.df.iloc[self.current_index]
-        french_word = str(row.iloc[self.french_col])
+        french_word = str(row.iloc[self.french_col]).strip()
         self.query_one("#flashcard_display", Static).update(f"French: {french_word}")
-        self.query_one("#debug_log", RichLog).write(f"[blue]Displaying card {self.current_index+1}/{len(self.df)}[/blue]")
+        self.query_one("#debug_log", RichLog).write(
+            f"[blue]Displaying card {self.current_index+1}/{len(self.df)}[/blue]")
+        guess_input = self.query_one("#guess_input", Input)
+        guess_input.value = ""
+
+    async def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "guess_input":
+            guess = event.value.strip().lower()
+            row = self.df.iloc[self.current_index]
+            correct_translation = str(row.iloc[self.english_col]).strip().lower()
+            french_word = str(row.iloc[self.french_col]).strip()
+            if french_word not in self.word_stats:
+                self.word_stats[french_word] = {'correct': 0, 'incorrect': 0, 'trans_correct': 0, 'trans_incorrect': 0}
+            if guess == correct_translation:
+                self.word_stats[french_word]['correct'] += 1
+                self.query_one("#debug_log", RichLog).write(
+                    f"[green]Correct! {french_word} -> {correct_translation}[/green]")
+            else:
+                self.word_stats[french_word]['incorrect'] += 1
+                self.query_one("#debug_log", RichLog).write(
+                    f"[red]Incorrect! {french_word} -> {correct_translation}. Your answer: {event.value}[/red]")
+            event.input.value = ""
 
     async def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "show_translation":
             row = self.df.iloc[self.current_index]
-            translation = str(row.iloc[self.english_col])
-            self.query_one("#flashcard_display", Static).update(f"French: {str(row.iloc[self.french_col])}\nEnglish: {translation}")
+            correct_translation = str(row.iloc[self.english_col]).strip()
+            french_word = str(row.iloc[self.french_col]).strip()
+            self.query_one("#flashcard_display", Static).update(
+                f"French: {french_word}\nEnglish: {correct_translation}")
             self.query_one("#debug_log", RichLog).write("[green]Translation shown.[/green]")
         elif event.button.id == "next_card":
             self.current_index += 1
             self.display_flashcard()
+        elif event.button.id == "save_stats":
+            self.save_results()
+            self.query_one("#debug_log", RichLog).write("[blue]Stats saved.[/blue]")
+
+    def save_results(self) -> None:
+        # Ensure the stats directory exists.
+        stats_dir = "stats_textual_app"
+        os.makedirs(stats_dir, exist_ok=True)
+        # Build records from word_stats.
+        records = []
+        for word, stats in self.word_stats.items():
+            records.append({
+                "Word": word,
+                "Correct": stats.get("correct", 0),
+                "Incorrect": stats.get("incorrect", 0),
+                "Trans Correct": stats.get("trans_correct", 0),
+                "Trans Incorrect": stats.get("trans_incorrect", 0)
+            })
+        if records:
+            df_stats = pd.DataFrame(records)
+            date_str = datetime.now().strftime("%T_%d_%m_%Y").replace(":", "-")
+            file_path = os.path.join(stats_dir, f"stats_{date_str}.csv")
+            df_stats.to_csv(file_path, index=False)
+        else:
+            self.query_one("#debug_log", RichLog).write("[yellow]No stats to save.[/yellow]")
 
     async def action_exit_flashcards(self) -> None:
         self.query_one("#debug_log", RichLog).write("[yellow]Exiting flashcard mode...[/yellow]")
@@ -259,6 +312,11 @@ class CSVApp(App):
         margin: 1 0;
         border: round blue;
     }
+    Input {
+        width: 80%;
+        margin: 1 0;
+        border: round magenta;
+    }
     Button {
         width: 50%;
         margin: 1 0;
@@ -274,6 +332,12 @@ class CSVApp(App):
         border: round magenta;
         width: 80%;
         margin: 1 0;
+    }
+    Static#exit_instructions {
+        text-align: center;
+        color: white;
+        background: darkgreen;
+        padding: 1;
     }
     """
 
